@@ -4,7 +4,7 @@
 
 This data lake project is designed for Kenyan e-commerce analytics using Kaggle datasets. The project provides a scalable architecture for ingesting, transforming, and querying e-commerce data to enable data-driven insights and analytics.
 
-The data lake follows a medallion architecture pattern with layers for raw, refined, and curated data, enabling efficient data processing and analysis workflows.
+The data lake follows a medallion architecture pattern with layers for raw, refined, and curated data, enabling efficient data processing and analysis workflows. Datasets are enriched with Kenyan county mappings (e.g., Nairobi, Mombasa, Kisumu, Nakuru) to enable regional insights and county-level analytics.
 
 ## Tech Stack
 
@@ -38,6 +38,38 @@ graph LR
 3. **Refined Layer**: Cleaned and standardized data with basic transformations
 4. **Curated Layer**: Business-ready, aggregated data optimized for analytics
 5. **Athena Queries**: SQL queries for analytics and reporting
+
+## Kenyan Context & Data Enrichment
+
+### County Mapping
+
+This project adapts Kaggle e-commerce datasets for Kenyan market analysis by enriching location data with county mappings. Key counties include:
+
+- **Nairobi County**: Capital city, major commercial hub
+- **Mombasa County**: Coastal region, port city
+- **Kisumu County**: Western Kenya, Lake Victoria region
+- **Nakuru County**: Rift Valley, agricultural center
+- **And 43 additional counties** across Kenya
+
+### Regional Insights
+
+The county mapping enables:
+
+- **County-level sales analysis**: Understand e-commerce performance by region
+- **Regional demand patterns**: Identify buying trends across different counties
+- **Delivery optimization**: Analyze shipping costs and delivery times by region
+- **Market segmentation**: Tailor marketing strategies to county-specific preferences
+- **Economic indicators**: Correlate e-commerce activity with regional economic data
+
+### Data Transformation
+
+During the transformation pipeline, address and location data from raw datasets are:
+1. Standardized to Kenyan county format
+2. Enriched with county metadata (region, population, economic indicators)
+3. Geocoded for spatial analysis (latitude/longitude)
+4. Aggregated at county level for regional reporting
+
+This enrichment happens in the **Refined Layer** during data transformation, making county-level analytics readily available in the **Curated Layer**.
 
 ## Setup Instructions
 
@@ -117,16 +149,16 @@ python src/ingest/ingest_data.py
 
 ### Data Transformation
 
-Run transformation pipelines to process data through the layers:
+Run transformation pipelines to process data through the layers. County mapping and regional enrichment are applied during transformation:
 
 ```bash
-python src/transform/transform_raw_to_refined.py
-python src/transform/transform_refined_to_curated.py
+python src/transform/transform_raw_to_refined.py  # Includes county mapping
+python src/transform/transform_refined_to_curated.py  # County-level aggregations
 ```
 
 ### Querying Data
 
-Execute Athena queries or use notebooks for exploratory analysis:
+Execute Athena queries or use notebooks for exploratory analysis. Example queries include county-level sales, regional trends, and delivery analytics:
 
 ```bash
 # Using Athena queries
@@ -135,6 +167,12 @@ python src/queries/run_query.py
 # Or use Jupyter notebooks
 jupyter notebook notebooks/
 ```
+
+### County-Level Analytics Examples
+
+- **Sales by County**: `SELECT county, SUM(amount) as total_sales FROM curated.sales GROUP BY county`
+- **Top Performing Counties**: Analyze revenue, order volume, and customer retention by county
+- **Regional Delivery Metrics**: Compare delivery times and costs across different counties
 
 ### Project Structure
 
