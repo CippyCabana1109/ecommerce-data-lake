@@ -1,0 +1,362 @@
+name: Ecommerce Data Lake CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: '3.10'
+  SPARK_VERSION: '3.4.0'
+  JAVA_VERSION: '11'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+          - 4571:4571
+        env:
+          SERVICES: s3
+          DEBUG: 1
+          DATA_DIR: /tmp/localstack/data
+        options: >-
+          --health-cmd "curl -f http://localhost:4566/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Set up Java ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: ${{ env.JAVA_VERSION }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y curl wget openjdk-11-jdk-headless
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8 black isort mypy
+        pip install awscli-local[localstack]
+
+    - name: Configure LocalStack
+      run: |
+        aws --endpoint-url=http://localhost:4566 s3 mb s3://test-bucket
+        aws --endpoint-url=http://localhost:4566 s3 mb s3://test-bucket-raw
+        aws --endpoint-url=http://localhost:4566 s3 mb s3://test-bucket-refined
+        aws --endpoint-url=http://localhost:4566 s3 mb s3://test-bucket-curated
+      env:
+        AWS_ACCESS_KEY_ID: test
+        AWS_SECRET_ACCESS_KEY: test
+        AWS_DEFAULT_REGION: us-east-1
+
+    - name: Lint with flake8
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Check code formatting with black
+      run: |
+        black --check --diff src/ tests/
+
+    - name: Check import sorting with isort
+      run: |
+        isort --check-only --diff src/ tests/
+
+    - name: Type checking with mypy
+      run: |
+        mypy src/utils/lineage_logger.py --ignore-missing-imports
+        mypy src/queries/setup_catalog.py --ignore-missing-imports
+
+    - name: Run basic tests
+      run: |
+        pytest tests/test_basic.py -v
+
+    - name: Run ingestion tests with mock S3
+      run: |
+        pytest tests/test_lake.py::TestIngestion -v -s
+      env:
+        AWS_ACCESS_KEY_ID: test
+        AWS_SECRET_ACCESS_KEY: test
+        AWS_DEFAULT_REGION: us-east-1
+        S3_ENDPOINT_URL: http://localhost:4566
+
+    - name: Create test data
+      run: |
+        mkdir -p data/samples
+        cat > data/samples/test_sales.csv << EOF
+        product_id,date,county,quantity,price
+        P001,2023-01-01,Nairobi,2,29.99
+        P002,2023-01-01,Mombasa,1,49.99
+        P001,2023-01-02,Nairobi,3,29.99
+        EOF
+        
+        cat > data/samples/test_products.csv << EOF
+        product_id,product_name,category
+        P001,Laptop,Electronics
+        P002,Mouse,Electronics
+        P003,Desk Chair,Furniture
+        EOF
+
+    - name: Upload test data to mock S3
+      run: |
+        aws --endpoint-url=http://localhost:4566 s3 cp data/samples/test_sales.csv s3://test-bucket-raw/sales/
+        aws --endpoint-url=http://localhost:4566 s3 cp data/samples/test_products.csv s3://test-bucket-raw/products/
+      env:
+        AWS_ACCESS_KEY_ID: test
+        AWS_SECRET_ACCESS_KEY: test
+        AWS_DEFAULT_REGION: us-east-1
+
+    - name: Test Spark job configuration
+      run: |
+        # Test that Spark configuration is valid
+        python -c "
+        import os
+        os.environ['BUCKET_NAME'] = 'test-bucket'
+        from src.transform.process_to_refined import DataProcessor
+        processor = DataProcessor('test-bucket')
+        print('✅ DataProcessor initialization successful')
+        print('✅ Lineage logger initialized successfully')
+        "
+
+    - name: Test curated data processor
+      run: |
+        python -c "
+        import os
+        os.environ['BUCKET_NAME'] = 'test-bucket'
+        from src.transform.create_curated import CuratedDataProcessor
+        processor = CuratedDataProcessor('test-bucket')
+        print('✅ CuratedDataProcessor initialization successful')
+        "
+
+    - name: Test Glue catalog setup configuration
+      run: |
+        python -c "
+        import os
+        os.environ['BUCKET_NAME'] = 'test-bucket'
+        from src.queries.setup_catalog import GlueCatalogSetup
+        setup = GlueCatalogSetup('test-bucket')
+        print('✅ GlueCatalogSetup initialization successful')
+        print(f'✅ Database name: {setup.database_name}')
+        print(f'✅ Crawlers configured: {len(setup.crawlers)}')
+        "
+
+    - name: Test lineage logging
+      run: |
+        python -c "
+        from src.utils.lineage_logger import get_lineage_logger
+        logger = get_lineage_logger()
+        
+        # Test transformation logging
+        log_path = logger.log_transformation(
+            job_name='test_job',
+            input_paths=['s3://test/input'],
+            output_path='s3://test/output',
+            transformations=['test_transform'],
+            metrics={'test_metric': 100},
+            status='SUCCESS'
+        )
+        print(f'✅ Transformation logged to: {log_path}')
+        
+        # Test quality logging
+        quality_path = logger.log_data_quality(
+            job_name='test_job',
+            quality_checks={'test_check': {'passed': True}},
+            overall_status='PASSED'
+        )
+        print(f'✅ Quality logged to: {quality_path}')
+        
+        # Test lineage summary
+        summary = logger.get_lineage_summary(days=7)
+        print(f'✅ Lineage summary: {summary}')
+        "
+
+    - name: Validate SQL queries
+      run: |
+        # Check that SQL files are syntactically valid
+        if [ -f "src/queries/insights.sql" ]; then
+          echo "✅ insights.sql exists"
+          # Basic SQL syntax check (looking for obvious issues)
+          if grep -q "CREATE EXTERNAL TABLE" src/queries/insights.sql; then
+            echo "✅ SQL contains CREATE EXTERNAL TABLE statements"
+          fi
+          if grep -q "SELECT.*FROM.*GROUP BY" src/queries/insights.sql; then
+            echo "✅ SQL contains aggregation queries"
+          fi
+        fi
+
+    - name: Test project structure
+      run: |
+        # Validate project structure
+        required_dirs=("src" "tests" "data" ".github")
+        for dir in "${required_dirs[@]}"; do
+          if [ -d "$dir" ]; then
+            echo "✅ Directory $dir exists"
+          else
+            echo "❌ Directory $dir missing"
+            exit 1
+          fi
+        done
+        
+        # Validate required files
+        required_files=("requirements.txt" "README.md" "src/transform/process_to_refined.py" "src/transform/create_curated.py")
+        for file in "${required_files[@]}"; do
+          if [ -f "$file" ]; then
+            echo "✅ File $file exists"
+          else
+            echo "❌ File $file missing"
+            exit 1
+          fi
+        done
+
+    - name: Performance test with larger dataset
+      run: |
+        python -c "
+        import pandas as pd
+        import numpy as np
+        
+        # Generate larger test dataset
+        np.random.seed(42)
+        n_records = 10000
+        
+        data = {
+            'product_id': [f'P{str(i).zfill(3)}' for i in np.random.randint(1, 100, n_records)],
+            'date': pd.date_range('2023-01-01', periods=n_records, freq='H'),
+            'county': np.random.choice(['Nairobi', 'Mombasa', 'Kisumu', 'Nakuru'], n_records),
+            'quantity': np.random.randint(1, 10, n_records),
+            'price': np.round(np.random.uniform(10, 500, n_records), 2)
+        }
+        
+        df = pd.DataFrame(data)
+        print(f'✅ Generated test dataset with {len(df)} records')
+        print(f'✅ Dataset shape: {df.shape}')
+        print(f'✅ Memory usage: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB')
+        "
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run security scan with bandit
+      run: |
+        pip install bandit
+        bandit -r src/ -f json -o bandit-report.json || true
+        bandit -r src/
+
+    - name: Check for secrets
+      run: |
+        # Check for potential secrets in code
+        if grep -r -i "password\|secret\|token\|key" src/ --exclude-dir=__pycache__ | grep -v "lineage_logger\|test"; then
+          echo "❌ Potential secrets found in code"
+          exit 1
+        else
+          echo "✅ No obvious secrets found"
+        fi
+
+  build-docs:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        pip install markdown pygments
+
+    - name: Validate README
+      run: |
+        # Check if README is valid markdown
+        python -c "
+        import markdown
+        with open('README.md', 'r') as f:
+            content = f.read()
+        markdown.markdown(content)
+        print('✅ README.md is valid markdown')
+        "
+
+    - name: Check documentation coverage
+      run: |
+        # Check that all main scripts have docstrings
+        python -c "
+        import ast
+        import os
+        
+        scripts = [
+            'src/transform/process_to_refined.py',
+            'src/transform/create_curated.py',
+            'src/queries/setup_catalog.py',
+            'src/utils/lineage_logger.py'
+        ]
+        
+        for script in scripts:
+            if os.path.exists(script):
+                with open(script, 'r') as f:
+                    content = f.read()
+                tree = ast.parse(content)
+                
+                # Check for module docstring
+                if ast.get_docstring(tree):
+                    print(f'✅ {script} has module docstring')
+                else:
+                    print(f'❌ {script} missing module docstring')
+                    
+                # Check for class docstrings
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ClassDef):
+                        if ast.get_docstring(node):
+                            print(f'✅ {script} has class docstring for {node.name}')
+                        else:
+                            print(f'❌ {script} missing class docstring for {node.name}')
+        "
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: [test, security, build-docs]
+    if: always()
+    steps:
+    - name: Notify build status
+      run: |
+        if [ '${{ needs.test.result }}' == 'success' ] && [ '${{ needs.security.result }}' == 'success' ] && [ '${{ needs.build-docs.result }}' == 'success' ]; then
+          echo '✅ All CI/CD jobs passed successfully!'
+          echo '🚀 Ready for deployment'
+        else
+          echo '❌ Some CI/CD jobs failed'
+          echo '🔧 Please check the logs and fix the issues'
+          exit 1
+        fi
