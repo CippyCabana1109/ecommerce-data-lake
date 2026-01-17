@@ -1,7 +1,20 @@
 """
 PySpark script to process raw sales and products data to refined format.
-Includes data cleaning, joining, partitioning, Delta Lake versioning, 
-data quality checks, and lineage logging.
+
+This script implements the raw-to-refined transformation in the medallion architecture,
+performing data cleaning, validation, joining, and Delta Lake storage with comprehensive
+lineage logging for governance and compliance.
+
+Features:
+- Data cleaning with null handling and type casting
+- Data quality validation with configurable thresholds
+- Delta Lake integration for ACID transactions and versioning
+- Comprehensive lineage logging for audit trails
+- Partitioned storage for optimal query performance
+- Error handling and recovery mechanisms
+
+Author: Ecommerce Data Lake Team
+Version: 1.0.0
 """
 
 from pyspark.sql import SparkSession
@@ -12,6 +25,11 @@ import logging
 import json
 from datetime import datetime
 import sys
+import os
+
+# Add utils to path for lineage logging
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils'))
+from lineage_logger import get_lineage_logger
 
 # Configure logging
 logging.basicConfig(
@@ -25,9 +43,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DataProcessor:
+    """
+    Data processor for raw-to-refined transformation.
+    
+    Handles the complete pipeline from raw data ingestion to refined layer storage,
+    including data cleaning, quality validation, and comprehensive lineage logging.
+    """
+    
     def __init__(self, bucket_name):
+        """
+        Initialize the data processor.
+        
+        Args:
+            bucket_name (str): S3 bucket name for data storage
+        """
         self.bucket_name = bucket_name
         self.spark = None
+        self.lineage_logger = get_lineage_logger()
         self.lineage_info = {
             'job_start_time': datetime.now().isoformat(),
             'input_paths': [],
@@ -38,7 +70,12 @@ class DataProcessor:
         }
         
     def create_spark_session(self):
-        """Create SparkSession with Delta Lake support"""
+        """
+        Create SparkSession with Delta Lake support.
+        
+        Returns:
+            SparkSession: Configured Spark session with Delta Lake extensions
+        """
         try:
             self.spark = (SparkSession.builder
                 .appName("Ecommerce-Data-Lake-Processing")
@@ -57,7 +94,12 @@ class DataProcessor:
             raise
             
     def read_raw_data(self):
-        """Read raw sales and products data from S3"""
+        """
+        Read raw sales and products data from S3.
+        
+        Returns:
+            tuple: (sales_df, products_df) DataFrames containing raw data
+        """
         try:
             # Define input paths
             sales_path = f"s3a://{self.bucket_name}/raw/sales/"
@@ -242,11 +284,38 @@ class DataProcessor:
             raise
             
     def log_lineage(self):
-        """Log lineage information"""
+        """
+        Log lineage information using the centralized lineage logger.
+        
+        Creates comprehensive audit trail for governance and compliance,
+        including transformation details, quality metrics, and data movement.
+        """
         try:
             self.lineage_info['job_end_time'] = datetime.now().isoformat()
             
-            # Write lineage info to log file
+            # Log transformation using centralized lineage logger
+            self.lineage_logger.log_transformation(
+                job_name="process_to_refined",
+                input_paths=self.lineage_info['input_paths'],
+                output_path=self.lineage_info['output_path'],
+                transformations=self.lineage_info['transformations'],
+                metrics={
+                    'row_counts': self.lineage_info['row_counts'],
+                    'data_quality_checks': self.lineage_info['data_quality_checks']
+                },
+                status="SUCCESS"
+            )
+            
+            # Log data quality separately
+            self.lineage_logger.log_data_quality(
+                job_name="process_to_refined",
+                quality_checks=self.lineage_info['data_quality_checks'],
+                overall_status="PASSED" if all(
+                    check['passed'] for check in self.lineage_info['data_quality_checks'].values()
+                ) else "FAILED"
+            )
+            
+            # Also write local backup for backward compatibility
             with open('lineage_log.json', 'w') as f:
                 json.dump(self.lineage_info, f, indent=2, default=str)
             
@@ -304,7 +373,18 @@ class DataProcessor:
                 logger.info("SparkSession stopped")
 
 def main():
-    """Main function to run the data processor"""
+    """
+    Main function to run the raw-to-refined data processor.
+    
+    Executes the complete pipeline from raw data ingestion to refined layer storage,
+    including data cleaning, quality validation, and comprehensive lineage logging.
+    
+    Environment Variables:
+        BUCKET_NAME: S3 bucket name (can be hardcoded as fallback)
+    
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
     # Configuration - replace with your actual bucket name
     BUCKET_NAME = "[your-bucket]"
     

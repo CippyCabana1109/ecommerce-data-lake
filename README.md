@@ -137,6 +137,47 @@ For local development without AWS:
        .getOrCreate()
    ```
 
+## How to Run
+
+### 1. Data Ingestion
+```bash
+# Ingest raw data to S3
+python src/ingest/ingest_data.py
+
+# Or run specific ingestion scripts
+python src/ingest/download_kaggle_data.py
+python src/ingest/upload_to_s3.py
+```
+
+### 2. Data Transformation
+```bash
+# Process raw data to refined layer with Delta Lake
+spark-submit src/transform/process_to_refined.py
+
+# Create curated views with aggregations
+spark-submit src/transform/create_curated.py
+```
+
+### 3. Query via Athena
+```bash
+# Set up Glue catalog and crawlers
+python src/queries/setup_catalog.py
+
+# Run Athena queries (via console or CLI)
+# See src/queries/insights.sql for sample queries
+```
+
+### 4. Testing
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test categories
+pytest tests/test_lake.py::TestIngestion -v
+pytest tests/test_lake.py::TestTransformations -v
+pytest tests/test_lake.py::TestCuratedAggregations -v
+```
+
 ## Usage
 
 ### Data Ingestion
@@ -152,8 +193,8 @@ python src/ingest/ingest_data.py
 Run transformation pipelines to process data through the layers. County mapping and regional enrichment are applied during transformation:
 
 ```bash
-python src/transform/transform_raw_to_refined.py  # Includes county mapping
-python src/transform/transform_refined_to_curated.py  # County-level aggregations
+python src/transform/process_to_refined.py  # Raw to Refined with Delta Lake
+python src/transform/create_curated.py     # Refined to Curated with aggregations
 ```
 
 ### Querying Data
@@ -161,8 +202,11 @@ python src/transform/transform_refined_to_curated.py  # County-level aggregation
 Execute Athena queries or use notebooks for exploratory analysis. Example queries include county-level sales, regional trends, and delivery analytics:
 
 ```bash
-# Using Athena queries
-python src/queries/run_query.py
+# Set up Glue catalog first
+python src/queries/setup_catalog.py
+
+# Using Athena queries (see src/queries/insights.sql)
+# Access via AWS Athena console or AWS CLI
 
 # Or use Jupyter notebooks
 jupyter notebook notebooks/
@@ -181,14 +225,32 @@ ecommerce-data-lake/
 ├── src/
 │   ├── ingest/          # Data ingestion scripts
 │   ├── transform/       # Data transformation pipelines
+│   │   ├── process_to_refined.py    # Raw to Refined with Delta Lake
+│   │   └── create_curated.py       # Refined to Curated with aggregations
 │   └── queries/         # Athena query scripts
+│       ├── setup_catalog.py         # Glue catalog setup
+│       └── insights.sql             # Business intelligence queries
+├── tests/
+│   ├── test_lake.py     # Comprehensive pytest suite
+│   ├── conftest.py      # Pytest configuration
+│   └── __init__.py      # Test package init
 ├── data/
-│   └── samples/         # Sample datasets
+│   ├── samples/         # Sample datasets
+│   └── lineage/         # Governance and lineage logs
 ├── notebooks/           # Jupyter notebooks for exploration
 ├── configs/             # Configuration files
 ├── requirements.txt     # Python dependencies
 └── README.md           # This file
 ```
+
+### Key Features
+
+- **Delta Lake Integration**: ACID transactions and versioning for data reliability
+- **Data Quality Checks**: Automated validation at each transformation step
+- **Lineage Logging**: Complete audit trail for governance and compliance
+- **Comprehensive Testing**: Pytest-based unit and integration tests
+- **County-Level Analytics**: Kenyan regional insights and aggregations
+- **AWS Glue Integration**: Automated catalog management and crawling
 
 ## Contributing
 
